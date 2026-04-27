@@ -7,8 +7,8 @@
 // @match *://*/*
 // @grant none
 // @run-at document-idle
-// @downloadURL
-// @updateURL
+// @downloadURL https://gh-proxy.org/https://github.com/sewolonX/Automatic-clicker/blob/main/Automatic-Clicker.js
+// @updateURL https://gh-proxy.org/https://github.com/sewolonX/Automatic-clicker/blob/main/Automatic-Clicker.js
 // ==/UserScript==
 
 (function () {
