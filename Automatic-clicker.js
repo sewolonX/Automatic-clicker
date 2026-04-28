@@ -315,7 +315,7 @@
  panel.id = 'ac-panel';
  panel.innerHTML = `
   <div class="ac-header">
-   <h3>🐖 ⚔</h3>
+   <h3>自动点击 ⚔</h3>
    <button class="ac-toggle" title="收起/展开">−</button>
   </div>
   <div class="ac-body">
