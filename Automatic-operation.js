@@ -113,6 +113,7 @@
             margin: 0;
             font-size: 15px;
             font-weight: 700;
+            font-family: inherit;
             color: var(--panel-text);
             display: flex;
             align-items: center;
@@ -130,6 +131,7 @@
             border: 1px solid var(--panel-button-border);
             color: var(--panel-button-text);
             font-size: 18px;
+            font-family: inherit;
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -193,7 +195,7 @@
         .ac-body {
             padding: 14px 14px 14px;
             overflow-y: auto;
-            max-height: calc(100vh - 45vh);
+            max-height: 55vh;
         }
         #ac-panel.collapsed .ac-body {
             display: none;
@@ -799,7 +801,7 @@
         targets.forEach((t, i) => {
             html += `<div class="ac-target-item active" data-index="${i}">
                 <span>${isMultiMode ? (i + 1) + '. ' : ''}${t.desc}</span>
-                <select class="ac-match-mode" data-index="${i}" style="position: absolute; right: 24px; top: 4px; width: 42px; height: 16px; font-size: 10px; padding: 0 4px; background: var(--panel-input-bg); border: 1px solid var(--panel-input-border); color: var(--panel-input-text); border-radius: 4px;">
+                <select class="ac-match-mode" data-index="${i}" style="position: absolute; right: 24px; top: 4px; width: 42px; height: 16px; font-size: 10px; font-family: inherit; padding: 0 4px; background: var(--panel-input-bg); border: 1px solid var(--panel-input-border); color: var(--panel-input-text); border-radius: 4px; opacity: 0.8;">
                     <option value="strict" ${t.matchMode === 'strict' ? 'selected' : ''}>严格</option>
                     <option value="text" ${t.matchMode === 'text' ? 'selected' : ''}>宽松</option>
                 </select>
