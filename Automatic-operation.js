@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Automatic-operation
 // @namespace    https://github.com/sewolonX/Automatic-operation
-// @version      4.7
+// @version      4.8
 // @description  选取元素后自动点击/输入，严格宽松双模式，支持单选、多选、队列模式，跨刷新保存，初始最小化。
 // @author       sewolon
 // @match        *://*/*
@@ -38,12 +38,12 @@
     let focusinHandler = null;
     let wakeLock = null;
     let stateTimerID = null;
+    let uiThrottled = false;
 
     // ========== 工具函数 ==========
     async function requestWakeLock() {
         try {
             wakeLock = await navigator.wakeLock.request('screen');
-            if (DEBUG) console.log('[AUTO_OP] WakeLock 已获取');
         } catch (e) {
             console.error('[AUTO_OP] WakeLock 获取失败:', e);
         }
@@ -53,12 +53,10 @@
         if (wakeLock) {
             await wakeLock.release();
             wakeLock = null;
-            if (DEBUG) console.log('[AUTO_OP] WakeLock 已释放');
         }
     }
 
     function suppressFocus() {
-        if (DEBUG) console.log('[AUTO_OP] suppressFocus 劫持 focus');
         HTMLElement.prototype.focus = function() {
             if (!panel.contains(this)) return;
             originalFocus.apply(this, arguments);
@@ -70,7 +68,6 @@
     }
 
     function restoreFocus() {
-        if (DEBUG) console.log('[AUTO_OP] restoreFocus 恢复 focus');
         HTMLElement.prototype.focus = originalFocus;
         if (focusinHandler) {
             document.removeEventListener('focusin', focusinHandler, true);
@@ -134,7 +131,7 @@
             position: fixed; top: 20px; left: 20px; z-index: 2147483647 !important;
             background: var(--panel-bg); color: var(--panel-text); border: 1px solid var(--panel-border);
             border-radius: 12px; padding: 0; width: 300px; font-size: 13px !important;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.5); transition: opacity 0.3s; overflow: hidden;
+            box-shadow: 0 0 6px rgba(0,0,0,0.15); transition: opacity 0.3s; overflow: hidden;
             display: flex; flex-direction: column; font-variant-numeric: tabular-nums !important;
             text-align: left !important;
         }
@@ -259,14 +256,15 @@
             background: var(--panel-input-bg); border: 1px solid var(--panel-input-border);
             border-radius: 6px; padding: 8px 10px; font-size: 12px; font-family: var(--ac-font);
             color: var(--panel-highlight-border); word-break: break-all; line-height: 1.5;
-            position: relative; min-height: 54px; max-height: 60px; overflow-y: auto;
+            position: relative; min-height: 54px; max-height: 80px; overflow-y: auto;
             box-sizing: border-box; transition: border-color 0s, color 0s;
-             scrollbar-width: none; -ms-overflow-style: none;
-             }
+            scrollbar-width: none; -ms-overflow-style: none;
+        }
         .ac-target-item::-webkit-scrollbar { display: none; }
         .ac-target-item.active { border-color: var(--panel-active-border); color: var(--panel-active-text); }
         .ac-target-item.missing { border-color: var(--panel-missing-border); color: var(--panel-missing-text); }
         .ac-target-item span { display: block; padding-right: 20px; white-space: pre-wrap; font-weight: 600; }
+        .ac-target-parent { display: block; font-size: 11px; font-weight: 600; color: var(--panel-highlight-border); margin-bottom: 2px; }
         .ac-match-mode {
             position: absolute !important; right: 24px !important; top: 4px !important; width: 42px !important; height: 16px !important;
             font-size: 10px !important; font-weight: 500 !important; font-family: var(--ac-font) !important; padding: 0px 4px !important;
@@ -305,11 +303,12 @@
         .ac-status .ac-waiting { color: var(--panel-waiting-text); font-size: 11px; font-family: var(--ac-font); }
         .ac-highlight { outline: 2px dashed var(--panel-highlight) !important; outline-offset: 2px !important; cursor: crosshair !important; }
         .ac-selected-highlight { outline: 2px solid var(--panel-selected-highlight) !important; outline-offset: 2px !important; }
+        .ac-parent-highlight { box-shadow: 0 0 0 2px var(--panel-highlight-border) !important; position: relative !important; }
         .ac-btn-cancel {
             flex-shrink: 0; padding: 0px; font-size: 11px; font-family: var(--ac-font);
             background: var(--panel-button-bg); border: 1px solid var(--panel-button-border);
             color: var(--panel-button-text); border-radius: 4px; cursor: pointer;
-            white-space: nowrap; max-width: 35px;  max-height: 16px
+            white-space: nowrap; max-width: 35px;  max-height: 16px;
             display: inline-flex; align-items: center; justify-content: center;
         }
         .ac-btn-cancel:hover { background: var(--panel-button-hover-bg); color: var(--panel-button-hover-text); }
@@ -459,6 +458,17 @@
         return { strict: strict, loose: base };
     }
 
+    function isInputField(el) {
+        if (!el) return false;
+        if (el.isContentEditable) return true;
+        if (el.tagName === 'TEXTAREA') return true;
+        if (el.tagName === 'INPUT') {
+            const t = (el.type || '').toLowerCase();
+            return t !== 'range' && t !== 'checkbox' && t !== 'radio' && t !== 'hidden' && t !== 'file' && t !== 'color' && t !== 'submit' && t !== 'button' && t !== 'reset' && t !== 'image';
+        }
+        return false;
+    }
+
     // ========== 公共文本提取函数（生成指纹和面板显示） ==========
     function getElText(el) {
         let text = (el.textContent || '').trim();
@@ -493,7 +503,6 @@
                 }
             } catch(e) {}
         }
-        if (DEBUG) console.log('[AUTO_OP] getElText 结果:', text || '(空)', 'el:', el.tagName, el.id);
         return text;
     }
 
@@ -510,23 +519,24 @@
             if (match) onclickParam = match[1];
         }
         let text = getElText(el);
+        if (!text && isInputField(el) && el.value != null && String(el.value).trim()) {
+            text = String(el.value).trim();
+        }
         const result = {
             tagName: el.tagName.toLowerCase(), text: text, dataAttrs, attrs, onclickParam,
             hasStrong: !!el.id || Object.keys(dataAttrs).length > 0 || keyAttrs.some(k => attrs[k])
         };
-        if (DEBUG) console.log('[AUTO_OP] getElementFingerprint:', result);
         return result;
     }
 
     function matchesFingerprint(el, fp, matchMode) {
-        if (DEBUG) console.log('[AUTO_OP] matchesFingerprint 开始 matchMode:', matchMode, 'el:', el.tagName, 'fp.tagName:', fp.tagName);
-        if (!el || el.tagName.toLowerCase() !== fp.tagName) { if (DEBUG) console.log('[AUTO_OP] matchesFingerprint 标名不匹配, return false'); return false; }
+        if (!el || el.tagName.toLowerCase() !== fp.tagName) { return false; }
         if (matchMode === 'strict') {
-            for (const [k, v] of Object.entries(fp.dataAttrs)) { if (el.getAttribute(k) !== v) { if (DEBUG) console.log('[AUTO_OP] 严格模式 dataAttr 不匹配:', k, '期望:', v, '实际:', el.getAttribute(k)); return false; } }
-            for (const [k, v] of Object.entries(fp.attrs)) { if (v && el.getAttribute(k) !== v) { if (DEBUG) console.log('[AUTO_OP] 严格模式 attrs 不匹配:', k, '期望:', v, '实际:', el.getAttribute(k)); return false; } }
+            for (const [k, v] of Object.entries(fp.dataAttrs)) { if (el.getAttribute(k) !== v) { return false; } }
+            for (const [k, v] of Object.entries(fp.attrs)) { if (v && el.getAttribute(k) !== v) { return false; } }
             if (fp.onclickParam) {
                 const m = (el.getAttribute('onclick') || '').match(/useItem\((\d+)\)/);
-                if (m && m[1] !== fp.onclickParam) { if (DEBUG) console.log('[AUTO_OP] 严格模式 onclickParam 不匹配, 期望:', fp.onclickParam, '实际:', m[1]); return false; }
+                if (m && m[1] !== fp.onclickParam) { return false; }
             }
             if (fp.text) {
                 let elText;
@@ -536,10 +546,10 @@
                         const visualAttrs = ['alt', 'title', 'placeholder', 'aria-label', 'value'];
                         for (const attr of visualAttrs) { const val = el.getAttribute(attr); if (val && val.trim()) { elText = val.trim(); break; } }
                     }
+                    if (!elText && isInputField(el) && el.value != null && String(el.value).trim()) { elText = String(el.value).trim(); }
                 } else { elText = getElText(el); }
-                if (elText !== fp.text) { if (DEBUG) console.log('[AUTO_OP] 严格模式 text 不匹配, 期望:', fp.text, '实际:', elText); return false; }
+                if (elText !== fp.text) { return false; }
             }
-            if (DEBUG) console.log('[AUTO_OP] 严格模式 匹配成功');
             return true;
         } else {
             if (fp.text) {
@@ -548,94 +558,143 @@
                     const visualAttrs = ['alt', 'title', 'placeholder', 'aria-label', 'value'];
                     for (const attr of visualAttrs) { const val = el.getAttribute(attr); if (val && val.trim()) { elText = val.trim(); break; } }
                 }
+                if (!elText && isInputField(el) && el.value != null && String(el.value).trim()) { elText = String(el.value).trim(); }
                 if (!elText) elText = getElText(el);
-                if (elText !== fp.text) { if (DEBUG) console.log('[AUTO_OP] 宽松模式 text 不匹配, 期望:', fp.text, '实际:', elText); return false; }
+                if (elText !== fp.text) { return false; }
             } else {
-                if (!(el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) { if (DEBUG) console.log('[AUTO_OP] 宽松模式 无文本 且不是输入元素, 不匹配'); return false; }
+                if (!isInputField(el)) { return false; }
             }
         }
-        if (DEBUG) console.log('[AUTO_OP] 宽松模式 匹配成功');
         return true;
     }
 
     function tryFindTarget(targetObj) {
         if (!targetObj || !targetObj.fingerprint) return null;
         const fp = targetObj.fingerprint;
-        if (DEBUG) console.log('[AUTO_OP] tryFindTarget 开始查找 strict:', targetObj.strict, 'loose:', targetObj.loose, 'matchMode:', targetObj.matchMode);
         function verifyList(list) {
             const matched = [];
-            if (DEBUG) console.log('[AUTO_OP] verifyList 候选元素数:', list.length);
             for (const el of list) {
-                if (panel.contains(el)) { if (DEBUG) console.log('[AUTO_OP] verifyList 跳过面板内元素:', el.tagName); continue; }
-                if (targets.some(t => t !== targetObj && t.element === el)) { if (DEBUG) console.log('[AUTO_OP] verifyList 跳过已被占用元素:', el.tagName); continue; }
+                if (panel.contains(el)) { continue; }
+                if (targets.some(t => t !== targetObj && t.element === el)) { continue; }
                 if (matchesFingerprint(el, fp, targetObj.matchMode)) {
                     matched.push(el);
-                    if (DEBUG) console.log('[AUTO_OP] verifyList 匹配成功:', el.tagName, el.id);
-                } else {
-                    if (DEBUG) console.log('[AUTO_OP] verifyList 匹配失败:', el.tagName, el.id);
                 }
             }
-            if (DEBUG) console.log('[AUTO_OP] verifyList 最终匹配数:', matched.length);
             return matched.length > 0 ? matched : null;
         }
         try {
             if (targetObj.strict) {
-                const queryResult = document.querySelectorAll(targetObj.strict); if (DEBUG) console.log('[AUTO_OP] strict 选择器查询:', targetObj.strict, '结果数:', queryResult.length);
+                const queryResult = document.querySelectorAll(targetObj.strict);
                 const found = verifyList(queryResult);
-                if (found) { if (DEBUG) console.log('[AUTO_OP] strict 匹配成功, 数量:', found.length); return found; }
+                if (found) { return found; }
             }
             if (targetObj.loose) {
-                const queryResult = document.querySelectorAll(targetObj.loose); if (DEBUG) console.log('[AUTO_OP] loose 选择器查询:', targetObj.loose, '结果数:', queryResult.length);
+                const queryResult = document.querySelectorAll(targetObj.loose);
                 const found = verifyList(queryResult);
-                if (found) { if (DEBUG) console.log('[AUTO_OP] loose 匹配成功, 数量:', found.length); return found; }
+                if (found) { return found; }
             }
             const found = verifyList(document.querySelectorAll(fp.tagName));
-            if (found) { if (DEBUG) console.log('[AUTO_OP] tagName 匹配成功, 数量:', found.length); return found; }
+            if (found) { return found; }
         } catch (e) { console.error('[AUTO_OP] tryFindTarget 异常:', e); }
-        if (DEBUG) console.log('[AUTO_OP] tryFindTarget 未找到任何匹配元素');
         return null;
     }
 
+    // ========== 父级高亮 ==========
+    function refreshParentHighlights() {
+        document.querySelectorAll('.ac-parent-highlight').forEach(el => {
+            if (!panel.contains(el)) {
+                el.classList.remove('ac-parent-highlight');
+                el.style.removeProperty('z-index');
+            }
+        });
+
+        const parentMap = new Map();
+        for (const t of targets) {
+            if (!t.parentChain || t.parentChain.length === 0) continue;
+            const p = t.parentChain[0]; // 只取最近的一层父级
+            if (!p) continue;
+            if (!parentMap.has(p.selector)) {
+                parentMap.set(p.selector, []);
+            }
+            if (t.element && document.contains(t.element)) {
+                parentMap.get(p.selector).push(t.element);
+            }
+        }
+
+        for (const [selector, children] of parentMap) {
+            let parent;
+            try { parent = document.querySelector(selector); } catch(e) {}
+            if (!parent || panel.contains(parent)) continue;
+
+            let maxZ = 0;
+            for (const child of children) {
+                const computed = window.getComputedStyle(child);
+                const z = parseInt(computed.zIndex, 10);
+                if (!isNaN(z) && z > maxZ) maxZ = z;
+            }
+
+            parent.classList.add('ac-parent-highlight');
+            parent.style.zIndex = (maxZ + 1) + '';
+        }
+    }
+
     // ========== 运行时发现新匹配元素 ==========
+    const discoveredElements = new Set();
+
     function discoverNewTargets() {
         if (targets.length === 0) return;
 
         const existingElements = new Set();
         for (const t of targets) {
-            if (t.element && document.contains(t.element)) {
-                existingElements.add(t.element);
-            }
+            if (t.element) existingElements.add(t.element);
+        }
+
+        for (const el of discoveredElements) {
+            if (!document.contains(el)) discoveredElements.delete(el);
         }
 
         const newTargets = [];
-        const seenSelectors = new Set();
+        const seenKeys = new Set();
 
         for (const t of targets) {
+            if (t.matchMode !== 'loose') continue;
+            if (!t.parentSelector) continue;
+
             const selector = t.loose || t.strict;
-            if (seenSelectors.has(selector)) continue;
-            seenSelectors.add(selector);
+            const seenKey = selector + '|' + t.parentSelector;
+            if (seenKeys.has(seenKey)) continue;
+            seenKeys.add(seenKey);
+
+            let parent;
+            try {
+                parent = document.querySelector(t.parentSelector);
+            } catch (e) {}
 
             let candidates;
-            try {
-                candidates = document.querySelectorAll(selector);
-            } catch (e) {
-                candidates = [];
-            }
 
-            if (candidates.length === 0) {
+            if (parent) {
                 try {
-                    candidates = document.querySelectorAll(t.fingerprint.tagName);
-                } catch (e) {
-                    candidates = [];
+                    candidates = parent.querySelectorAll(selector);
+                } catch (e) {}
+
+                if (!candidates || candidates.length === 0) {
+                    try {
+                        candidates = parent.querySelectorAll(t.fingerprint.tagName);
+                    } catch (e) {
+                        candidates = [];
+                    }
                 }
+            } else {
+                continue;
             }
 
             for (const el of candidates) {
                 if (panel.contains(el)) continue;
                 if (existingElements.has(el)) continue;
+                if (discoveredElements.has(el)) continue;
                 if (!matchesFingerprint(el, t.fingerprint, t.matchMode)) continue;
 
-                existingElements.add(el);
+                discoveredElements.add(el);
                 el.classList.add('ac-selected-highlight');
                 newTargets.push({
                     element: el,
@@ -644,20 +703,22 @@
                     fingerprint: t.fingerprint,
                     desc: t.desc,
                     isInput: t.isInput,
-                    matchMode: t.matchMode
+                    matchMode: t.matchMode,
+                    parentSelector: t.parentSelector,
+                    parentChain: t.parentChain,
+                    isAuto: true,
+                    missCount: 0
                 });
             }
         }
 
         if (newTargets.length > 0) {
             targets.push(...newTargets);
-            if (DEBUG) console.log('[AUTO_OP] discoverNewTargets 新增:', newTargets.length, '个');
         }
     }
 
     // ========== 持久化函数 ==========
     function saveData() {
-        if (DEBUG) console.log('[AUTO_OP] saveData 保存配置, targets 数量:', targets.length);
         const toSave = {
             isMultiMode, clickStrategy,
             clickInterval: parseInt(clickIntervalInput.value) || 1100,
@@ -666,20 +727,18 @@
             autoFillContent: autoFillInput.value,
             targets: targets.map(t => ({
                 strict: t.strict, loose: t.loose, fingerprint: t.fingerprint,
-                desc: t.desc, isInput: t.isInput, matchMode: t.matchMode
+                desc: t.desc, isInput: t.isInput, matchMode: t.matchMode, parentSelector: t.parentSelector, parentChain: t.parentChain || [],
+                isAuto: !!t.isAuto
             }))
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-        if (DEBUG) console.log('[AUTO_OP] saveData 保存完成, key:', STORAGE_KEY);
     }
 
     function loadData() {
-        if (DEBUG) console.log('[AUTO_OP] loadData 开始, STORAGE_KEY:', STORAGE_KEY);
         const saved = localStorage.getItem(STORAGE_KEY);
         if (!saved) return;
         try {
             const cfg = JSON.parse(saved);
-            if (DEBUG) console.log('[AUTO_OP] 加载配置:', cfg);
             isMultiMode = cfg.isMultiMode || false;
             multiModeCheckbox.checked = isMultiMode;
             strategyRow.style.display = isMultiMode ? 'block' : 'none';
@@ -694,63 +753,70 @@
 
             targets = [];
             (cfg.targets || []).forEach(t => {
-                if (DEBUG) console.log('[AUTO_OP] 恢复目标 desc:', t.desc, 'strict:', t.strict, 'loose:', t.loose);
                 const base = {
                     strict: t.strict,
                     loose: t.loose,
                     fingerprint: t.fingerprint,
                     desc: t.desc,
                     isInput: !!t.isInput,
-                    matchMode: t.matchMode || 'strict'
+                    matchMode: t.matchMode || 'strict',
+                    parentSelector: t.parentSelector || '',
+                    parentChain: t.parentChain || [],
+                    isAuto: !!t.isAuto,
+                    missCount: 0
                 };
                 const found = tryFindTarget({ ...base, element: null });
-                if (DEBUG) console.log('[AUTO_OP] 查找结果:', found ? found.length + '个' : '未找到', 'desc:', t.desc);
                 if (found && found.length > 0) {
                     found.forEach(el => {
                         const obj = { ...base, element: el };
                         el.classList.add('ac-selected-highlight');
                         targets.push(obj);
+                        discoveredElements.add(el);
                     });
                 } else {
                     targets.push({ ...base, element: null });
-                    if (DEBUG) console.log('[AUTO_OP] loadData 未找到, element 设为 null, desc:', t.desc);
                 }
             });
-            if (DEBUG) console.log('[AUTO_OP] loadData 完成, targets 总数:', targets.length);
+            targets.forEach(t => { t._isValid = !!t.element && document.contains(t.element) && matchesFingerprint(t.element, t.fingerprint, t.matchMode); });
             updateTargetUI();
             updateTargetCount();
             updateAutoFillVisibility();
+            refreshParentHighlights();
             if (targets.length > 0) { stateSpan.textContent = '就绪'; }
         } catch (e) { console.error("[AUTO_OP] loadData 异常:", e); }
     }
 
     // ========== UI 更新 ==========
     function updateTargetUI() {
-        if (DEBUG) console.log('[AUTO_OP] updateTargetUI targets 数量:', targets.length);
         if (targets.length === 0) {
             targetListContainer.innerHTML = '<div class="ac-target-info">未选取，请点击下方按钮选取</div>';
             btnClearAll.style.display = 'none';
             btnStart.disabled = true;
             btnHeaderStart.disabled = true;
-            if (DEBUG) console.log('[AUTO_OP] updateTargetUI 空列表, 禁用按钮');
             return;
         }
         btnClearAll.style.display = 'inline-block';
         btnStart.disabled = false;
         btnHeaderStart.disabled = false;
-        let html = '<div class="ac-target-list">';
+
+        const list = targetListContainer.querySelector('.ac-target-list');
+        const existingCount = list ? list.querySelectorAll('.ac-target-item').length : 0;
+
+        if (existingCount === targets.length && list) return;
+
+        let html = '';
         targets.forEach((t, i) => {
             html += `<div class="ac-target-item active" data-index="${i}">
                 <span>${isMultiMode ? (i + 1) + '. ' : ''}${t.desc}</span>
+                ${t.parentChain ? t.parentChain.map(p => '<span class="ac-target-parent">↓ ' + p.desc + '</span>').join('') : ''}
                 <select class="ac-match-mode" data-index="${i}">
                     <option value="strict" ${t.matchMode === 'strict' ? 'selected' : ''}>严格</option>
-                    <option value="text" ${t.matchMode === 'loose' ? 'selected' : ''}>宽松</option>
+                    <option value="loose" ${t.matchMode === 'loose' ? 'selected' : ''}>宽松</option>
                 </select>
                 <button class="ac-btn-item-del" onclick="window._acRemoveTarget(${i})">✕</button>
             </div>`;
         });
-        html += '</div>';
-        targetListContainer.innerHTML = html;
+        targetListContainer.innerHTML = '<div class="ac-target-list">' + html + '</div>';
 
         document.querySelectorAll('.ac-match-mode').forEach(select => {
             select.addEventListener('change', (e) => {
@@ -762,7 +828,6 @@
             });
         });
         updateTargetCount();
-        if (DEBUG) console.log('[AUTO_OP] updateTargetUI 渲染完成');
     }
 
     // ========== 自动填充行显隐控制 ==========
@@ -770,7 +835,6 @@
         const autoFillRow = document.getElementById('ac-auto-fill-row');
         if (!autoFillRow) return;
         const hasInputTarget = targets.some(t => t.isInput);
-        if (DEBUG) console.log('[AUTO_OP] updateAutoFillVisibility hasInputTarget:', hasInputTarget);
         autoFillRow.style.display = hasInputTarget ? 'block' : 'none';
     }
 
@@ -779,12 +843,12 @@
             let existCount = 0;
             let missingCount = 0;
             let total = targets.length;
-            targets.forEach(t => {
-                let el = t.element;
-                let isValid = el && document.contains(el) && matchesFingerprint(el, t.fingerprint, t.matchMode);
-                if (isValid) existCount++;
+            for (let i = 0; i < total; i++) {
+                const t = targets[i];
+                const el = t.element;
+                if (el && document.contains(el) && t._isValid) existCount++;
                 else missingCount++;
-            });
+            }
             targetCountSpan.innerHTML =
                 '[<span class="ac-target-count-exist">' + existCount + '</span>' +
                 '/' +
@@ -805,6 +869,7 @@
     }
 
     function updateTargetItemStyle(index, isMissing) {
+        if (uiThrottled) return;
         const item = targetListContainer.querySelector(`.ac-target-item[data-index="${index}"]`);
         if (!item) return;
         if (isMissing) { item.classList.remove('active'); item.classList.add('missing'); }
@@ -812,7 +877,6 @@
     }
 
     window._acRemoveTarget = function(index) {
-        if (DEBUG) console.log('[AUTO_OP] _acRemoveTarget 删除目标元素:', index, 'desc:', targets[index] ? targets[index].desc : '未知');
         if (targets[index]) {
             if (targets[index].element && targets[index].element.classList) {
                 targets[index].element.classList.remove('ac-selected-highlight');
@@ -833,10 +897,10 @@
             } else {
                 stateSpan.textContent = `剩余 ${targets.length} 个`;
             }
+            refreshParentHighlights();
             saveData();
             updateAutoFillVisibility();
         }
-        if (DEBUG) console.log('[AUTO_OP] _acRemoveTarget 删除完成, 剩余:', targets.length);
     };
 
     // ========== 拖拽逻辑 ==========
@@ -872,19 +936,17 @@
         e.stopPropagation();
         panel.classList.toggle('collapsed');
         toggleBtn.textContent = panel.classList.contains('collapsed') ? '+' : '−';
-        if (DEBUG) console.log('[AUTO_OP] 面板折叠切换:', panel.classList.contains('collapsed') ? '折叠' : '展开');
     });
 
     // ========== 交互事件 ==========
     multiModeCheckbox.addEventListener('change', (e) => {
         isMultiMode = e.target.checked;
-        if (DEBUG) console.log('[AUTO_OP] 多选模式切换:', isMultiMode);
         strategyRow.style.display = isMultiMode ? 'block' : 'none';
         clickStrategy = strategySelect.value;
         clearSelection();
         saveData();
     });
-    strategySelect.addEventListener('change', (e) => { clickStrategy = e.target.value; if (DEBUG) console.log('[AUTO_OP] 操作策略切换:', clickStrategy); saveData(); });
+    strategySelect.addEventListener('change', (e) => { clickStrategy = e.target.value; saveData(); })
     autoFillInput.addEventListener('input', (e) => { autoFillContent = e.target.value; saveData(); });
     [clickIntervalInput, maxClicksInput, missingActionSelect].forEach(el => { el.addEventListener('change', saveData); });
 
@@ -892,7 +954,6 @@
         e.stopPropagation();
         if (isRunning) return;
         isPicking = !isPicking;
-        if (DEBUG) console.log('[AUTO_OP] btnPick 切换选取模式:', isPicking ? '进入' : '退出');
         if (isPicking) {
             btnPick.textContent = '取消选取';
             btnPick.classList.add('picking');
@@ -924,10 +985,9 @@
     }
 
     function selectTarget(el) {
-        if (DEBUG) console.log('[AUTO_OP] selectTarget 选中元素:', el.tagName, el.id, el.className);
         if (stateTimerID) { clearTimeout(stateTimerID); stateTimerID = null; }
         el.classList.remove('ac-highlight');
-        if (targets.some(t => t.element === el) && isMultiMode) { if (DEBUG) console.log('[AUTO_OP] selectTarget 元素已选过, 退出选取'); exitPickMode(); return; }
+        if (targets.some(t => t.element === el) && isMultiMode) { return; }
         const sels = buildSelectors(el);
         const fp = getElementFingerprint(el);
         let desc = el.tagName.toLowerCase();
@@ -938,18 +998,32 @@
         }
         const text = getElText(el);
         if (text) desc += ' "' + text + '"';
-        const isInput = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
-        if (isInput) desc += ' (可输入)';
-        if (DEBUG) console.log('[AUTO_OP] selectTarget desc:', desc, 'isInput:', isInput, '选择器:', sels);
-        const targetObj = { element: el, strict: sels.strict, loose: sels.loose, fingerprint: fp, desc, isInput, matchMode: isInput ? 'loose' : 'strict' };
-        if (DEBUG) console.log('[AUTO_OP] 指纹:', fp, '选择器:', sels, 'desc:', desc, 'isInput:', isInput);
+        const isInput = isInputField(el);
+        if (isInput) desc += ' (isInput)';
+        let parentSelector = '';
+        let parentChain = [];
+        let ancestor = el.parentElement;
+        while (ancestor && ancestor !== document.body) {
+            const s = buildBaseSelector(ancestor);
+            if (s !== ancestor.tagName.toLowerCase()) {
+                if (!parentSelector) parentSelector = s;
+                let pdesc = ancestor.tagName.toLowerCase();
+                if (ancestor.id) pdesc += '#' + ancestor.id;
+                if (ancestor.className && typeof ancestor.className === 'string') {
+                    const cls = ancestor.className.trim().split(/\s+/).filter(c => c && !c.startsWith('ac-')).slice(0, 5).join('.');
+                    if (cls) pdesc += '.' + cls;
+                }
+                parentChain.push({ selector: s, desc: pdesc });
+            }
+            ancestor = ancestor.parentElement;
+        }
+
+        const targetObj = { element: el, strict: sels.strict, loose: sels.loose, fingerprint: fp, desc, isInput, matchMode: isInput ? 'loose' : 'strict', parentSelector, parentChain, isAuto: false, missCount: 0 };
         if (isMultiMode) {
             targets.push(targetObj);
-            if (DEBUG) console.log('[AUTO_OP] 多选模式, 当前共:', targets.length, '个目标');
             el.classList.add('ac-selected-highlight');
             stateSpan.textContent = `已选 ${targets.length} 个，继续选取或取消`;
         } else {
-            if (DEBUG) console.log('[AUTO_OP] 单选模式, 替换为新目标');
             targets.forEach(t => { if (t.element) t.element.classList.remove('ac-selected-highlight'); });
             targets = [targetObj];
             el.classList.add('ac-selected-highlight');
@@ -958,6 +1032,7 @@
         }
         updateTargetUI();
         updateTargetCount();
+        refreshParentHighlights();
         saveData();
         updateAutoFillVisibility();
     }
@@ -988,7 +1063,6 @@
     }
 
     function clearSelection() {
-        if (DEBUG) console.log('[AUTO_OP] clearSelection 清空, 当前:', targets.length, '个');
         targets.forEach(t => {
             if (t.element && t.element.classList) t.element.classList.remove('ac-selected-highlight');
         });
@@ -1004,16 +1078,15 @@
             }
             stateTimerID = null;
         }, 1000);
+        refreshParentHighlights();
         saveData();
         updateAutoFillVisibility();
-        if (DEBUG) console.log('[AUTO_OP] clearSelection 完成');
     }
 
     btnClearAll.addEventListener('click', (e) => { e.stopPropagation(); clearSelection(); });
 
     // 统一的开始/停止事件处理函数
     function handleToggleRunning(e) {
-        if (DEBUG) console.log('[AUTO_OP] handleToggleRunning isRunning:', isRunning, 'targets:', targets.length);
         e.stopPropagation();
         if (targets.length === 0) return;
         if (!isRunning) { startClicking(); }
@@ -1023,7 +1096,6 @@
     btnHeaderStart.addEventListener('click', handleToggleRunning);
 
     function startClicking() {
-        if (DEBUG) console.log('[AUTO_OP] startClicking 开始, targets 数量:', targets.length);
         if (stateTimerID) { clearTimeout(stateTimerID); stateTimerID = null; }
         if (isPicking) exitPickMode();
         isWaiting = false;
@@ -1051,7 +1123,6 @@
         countSpan.textContent = '0';
         const val = maxClicksInput.value.trim();
         maxClicks = val === '' ? Infinity : parseInt(val, 10) || Infinity;
-        if (DEBUG) console.log('[AUTO_OP] startClicking 参数 clickInterval:', clickInterval, 'maxClicks:', maxClicks === Infinity ? '无限' : maxClicks, 'isMultiMode:', isMultiMode, 'clickStrategy:', clickStrategy);
 
         btnStart.textContent = '停止';
         btnStart.className = 'ac-btn ac-btn-stop';
@@ -1069,20 +1140,16 @@
         stateSpan.classList.remove('ac-waiting');
 
         doClick();
-        if (DEBUG) console.log('[AUTO_OP] startClicking 首次 doClick 已执行');
         timerID = setInterval(doClick, clickInterval);
-        if (DEBUG) console.log('[AUTO_OP] startClicking setInterval 已启动, timerID:', timerID);
         requestWakeLock();
         suppressFocus();
         saveData();
     }
 
     function startWaitTimer(idx) {
-        if (DEBUG) console.log('[AUTO_OP] startWaitTimer 目标[' + idx + '] 开始等待');
         if (waitTimerID) clearTimeout(waitTimerID);
         function update() {
             if (!isWaiting || !isRunning) {
-                if (DEBUG) console.log('[AUTO_OP] startWaitTimer 提前终止, isWaiting:', isWaiting, 'isRunning:', isRunning);
                 if (waitTimerID) { clearTimeout(waitTimerID); waitTimerID = null; }
                 return;
             }
@@ -1090,7 +1157,6 @@
             const elapsed = Date.now() - waitStartTime;
             const remaining = maxWait - elapsed;
             if (remaining <= 0) {
-                if (DEBUG) console.log('[AUTO_OP] startWaitTimer 超时, 跳过目标[' + idx + '], 下一索引:', (idx + 1) % targets.length);
                 isWaiting = false;
                 if (waitTimerID) { clearTimeout(waitTimerID); waitTimerID = null; }
                 currentQueueIndex = (idx + 1) % targets.length;
@@ -1107,19 +1173,21 @@
 
     function doClick() {
         try {
-            if (DEBUG) console.log('[AUTO_OP] doClick 触发, targets:', targets.length, 'clickedCount:', clickedCount, 'currentQueueIndex:', currentQueueIndex);
             if (targets.length === 0) {
-                if (DEBUG) console.log('[AUTO_OP] doClick 无目标, 停止');
                 stopClicking();
                 return;
             }
 
             discoverNewTargets();
 
+            if (!doClick._lastUIUpdate) doClick._lastUIUpdate = 0;
+            const now = Date.now();
+            uiThrottled = (now - doClick._lastUIUpdate) < 100;
+            if (!uiThrottled) doClick._lastUIUpdate = now;
+
             const status = targets.map((t, i) => {
                 let el = t.element;
                 let isValid = el && document.contains(el) && matchesFingerprint(el, t.fingerprint, t.matchMode);
-                if (DEBUG) console.log('[AUTO_OP] doClick 目标[' + i + '] 状态:', isValid ? '有效' : '无效', 'desc:', t.desc);
 
                 if (!isValid) {
                     const found = tryFindTarget(t);
@@ -1128,9 +1196,6 @@
                         t.element = found[0];
                         found[0].classList.add('ac-selected-highlight');
                         isValid = true;
-                        if (DEBUG) console.log('[AUTO_OP] doClick 目标[' + i + '] 重新匹配成功');
-                    } else {
-                        if (DEBUG) console.log('[AUTO_OP] doClick 目标[' + i + '] 重新匹配无效');
                     }
                 }
 
@@ -1139,8 +1204,10 @@
             });
 
             const totalCount = targets.length;
-            if (DEBUG) console.log('[AUTO_OP] doClick 状态数组:', status.map((s, i) => '[' + i + ']:' + (s ? '有效' : '无效')).join(', '));
-            updateTargetCount(status);
+            for (let i = 0; i < totalCount; i++) {
+                targets[i]._isValid = status[i];
+            }
+            if (!uiThrottled) updateTargetCount(status);
 
             // ========== 队列模式 ==========
             if (isMultiMode && clickStrategy === 'sequential') {
@@ -1151,11 +1218,8 @@
                     return;
                 }
 
-                if (DEBUG) console.log('[AUTO_OP] doClick 队列模式, 当前索引:', idx, '状态:', status[idx] ? '有效' : '无效');
-
                 if (status[idx]) {
                     if (isWaiting) {
-                        if (DEBUG) console.log('[AUTO_OP] doClick 队列目标[' + idx + '] 恢复, 取消等待');
                         isWaiting = false;
                         if (waitTimerID) {
                             clearTimeout(waitTimerID);
@@ -1167,42 +1231,29 @@
                     const el = t.element;
 
                     if (t.isInput && autoFillContent) {
-                        if (DEBUG) console.log('[AUTO_OP] doClick 队列输入:', autoFillContent, '到目标[' + idx + ']');
-                        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                        if (isInputField(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
                             el.value = autoFillContent;
                             el.dispatchEvent(new Event('input', { bubbles: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
-                        } else if (el.isContentEditable) {
-                            el.innerHTML = autoFillContent;
-                        }
-                    } else {
-                        if (DEBUG) console.log('[AUTO_OP] doClick 队列操作目标[' + idx + ']');
-                        el.click();
-                    }
-
+                        } else if (el.isContentEditable) { el.innerHTML = autoFillContent; }
+                    } else { el.click(); }
                     clickedCount++;
                     countSpan.textContent = clickedCount;
                     stateSpan.textContent = `队列[${idx + 1}/${totalCount}]`;
                     stateSpan.classList.remove('ac-waiting');
                     currentQueueIndex = (idx + 1) % totalCount;
-                    if (DEBUG) console.log('[AUTO_OP] doClick 队列完成, 已操作:', clickedCount, '下一索引:', currentQueueIndex);
 
                     if (clickedCount >= maxClicks) {
-                        if (DEBUG) console.log('[AUTO_OP] doClick 达到最大次数, 停止');
                         stopClicking();
                         stateSpan.textContent = '已完成';
                     }
                 } else {
-                    if (DEBUG) console.log('[AUTO_OP] doClick 队列目标[' + idx + '] 无效, missingAction:', missingActionSelect.value);
-
                     if (missingActionSelect.value === 'stop') {
-                        if (DEBUG) console.log('[AUTO_OP] doClick 立即停止');
                         stopClicking();
                         stateSpan.textContent = `队列[${idx + 1}] 元素已消失`;
                         stateSpan.classList.remove('ac-waiting');
                     } else {
                         if (!isWaiting) {
-                            if (DEBUG) console.log('[AUTO_OP] doClick 开始等待目标[' + idx + ']');
                             isWaiting = true;
                             waitStartTime = Date.now();
                             startWaitTimer(idx);
@@ -1210,11 +1261,12 @@
                     }
                 }
 
+                // ---- 队列模式操作完成后，执行自动清理 ----
+                cleanupAutoTargets(status);
                 return;
             }
 
             // ========== 同时模式 ==========
-            if (DEBUG) console.log('[AUTO_OP] doClick 同时模式');
             let shouldStop = false;
             let anyClicked = false;
 
@@ -1226,26 +1278,16 @@
                     const el = t.element;
 
                     if (t.isInput && autoFillContent) {
-                        if (DEBUG) console.log('[AUTO_OP] doClick 同时输入目标[' + i + ']:', autoFillContent);
-                        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                        if (isInputField(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
                             el.value = autoFillContent;
                             el.dispatchEvent(new Event('input', { bubbles: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
-                        } else if (el.isContentEditable) {
-                            el.innerHTML = autoFillContent;
-                        }
-                    } else {
-                        if (DEBUG) console.log('[AUTO_OP] doClick 同时操作目标[' + i + ']');
-                        el.click();
-                    }
-                } else {
-                    if (DEBUG) console.log('[AUTO_OP] doClick 同时模式目标[' + i + '] 无效');
-                    if (missingActionSelect.value === 'stop') shouldStop = true;
-                }
+                        } else if (el.isContentEditable) { el.innerHTML = autoFillContent; }
+                    } else { el.click(); }
+                } else { if (missingActionSelect.value === 'stop') shouldStop = true; }
             }
 
             if (shouldStop) {
-                if (DEBUG) console.log('[AUTO_OP] doClick 同时模式有元素消失, 停止');
                 stopClicking();
                 stateSpan.textContent = '元素已消失';
                 stateSpan.classList.remove('ac-waiting');
@@ -1253,27 +1295,53 @@
             }
 
             if (anyClicked) {
-                if (DEBUG) console.log('[AUTO_OP] doClick 同时模式完成, 已操作:', clickedCount);
                 clickedCount++;
                 countSpan.textContent = clickedCount;
                 stateSpan.textContent = isMultiMode && clickStrategy === 'simultaneous' ? '同时操作运行中' : '运行中';
                 stateSpan.classList.remove('ac-waiting');
 
                 if (clickedCount >= maxClicks) {
-                    if (DEBUG) console.log('[AUTO_OP] doClick 达到最大次数, 停止');
                     stopClicking();
                     stateSpan.textContent = '已完成';
                 }
-            } else {
-                if (DEBUG) console.log('[AUTO_OP] doClick 同时模式本轮无任何操作');
             }
+
+            // ---- 同时模式操作完成后，执行自动清理 ----
+            cleanupAutoTargets(status);
+
         } catch (e) {
             console.error('[AUTO_OP] doClick 异常:', e);
         }
     }
 
+    function cleanupAutoTargets(status) {
+        for (let i = targets.length - 1; i >= 0; i--) {
+            if (!targets[i].isAuto) continue;
+            if (status[i] !== undefined && status[i]) {
+                targets[i].missCount = 0;
+            } else if (status[i] === false) {
+                targets[i].missCount = (targets[i].missCount || 0) + 1;
+                if (targets[i].missCount >= 5) {
+                    if (targets[i].element && targets[i].element.classList) {
+                        targets[i].element.classList.remove('ac-selected-highlight');
+                    }
+                    discoveredElements.delete(targets[i].element);
+                    targets.splice(i, 1);
+                }
+            }
+        }
+
+        // 清理后对齐 currentQueueIndex
+        if (targets.length > 0 && currentQueueIndex >= targets.length) {
+            currentQueueIndex = 0;
+        }
+
+        if (!uiThrottled) refreshParentHighlights();
+        if (!uiThrottled) updateTargetUI();
+        if (!uiThrottled) updateTargetCount();
+    }
+
     function stopClicking() {
-        if (DEBUG) console.log('[AUTO_OP] stopClicking 被调用, isRunning:', isRunning, 'isWaiting:', isWaiting, 'clickedCount:', clickedCount);
         if (stateTimerID) { clearTimeout(stateTimerID); stateTimerID = null; }
         isRunning = false; isWaiting = false;
         restoreFocus();
@@ -1286,7 +1354,6 @@
         maxClicksInput.disabled = false; clickIntervalInput.disabled = false;
         missingActionSelect.disabled = false; autoFillInput.disabled = false;
         statusDiv.classList.remove('running'); stateSpan.classList.remove('ac-waiting'); if (targets.length > 0) { stateSpan.textContent = '就绪'; } else { stateSpan.textContent = '请选取目标元素'; }
-        if (DEBUG) console.log('[AUTO_OP] stopClicking 完成, 所有定时器已清除');
     }
 
     panel.addEventListener('click', (e) => { e.stopPropagation(); });
