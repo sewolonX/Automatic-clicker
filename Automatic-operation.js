@@ -373,7 +373,7 @@
             </div>
             <div class="ac-row" id="ac-auto-fill-row" style="display: none;">
                 <label>自动填充内容</label>
-                <input type="text" id="ac-auto-fill" placeholder="输入内容（留空为点击）">
+                <input type="text" id="ac-auto-fill" placeholder="输入内容（留空为清空）">
             </div>
             <div class="ac-row">
                 <label>操作次数</label>
@@ -464,7 +464,7 @@
         if (el.tagName === 'TEXTAREA') return true;
         if (el.tagName === 'INPUT') {
             const t = (el.type || '').toLowerCase();
-            return t !== 'range' && t !== 'checkbox' && t !== 'radio' && t !== 'hidden' && t !== 'file' && t !== 'color' && t !== 'submit' && t !== 'button' && t !== 'reset' && t !== 'image';
+            return /*t !== 'range' &&*/ t !== 'checkbox' && t !== 'radio' && t !== 'hidden' && t !== 'file' && t !== 'color' && t !== 'submit' && t !== 'button' && t !== 'reset' && t !== 'image';
         }
         return false;
     }
@@ -582,20 +582,41 @@
             }
             return matched.length > 0 ? matched : null;
         }
+        let root = document;
+        if (targetObj.parentSelector) {
+            try {
+                const p = document.querySelector(targetObj.parentSelector);
+                if (p) root = p;
+            } catch (e) {}
+        }
         try {
             if (targetObj.strict) {
-                const queryResult = document.querySelectorAll(targetObj.strict);
+                const queryResult = root.querySelectorAll(targetObj.strict);
                 const found = verifyList(queryResult);
                 if (found) { return found; }
             }
             if (targetObj.loose) {
-                const queryResult = document.querySelectorAll(targetObj.loose);
+                const queryResult = root.querySelectorAll(targetObj.loose);
                 const found = verifyList(queryResult);
                 if (found) { return found; }
             }
-            const found = verifyList(document.querySelectorAll(fp.tagName));
+            const found = verifyList(root.querySelectorAll(fp.tagName));
             if (found) { return found; }
         } catch (e) { console.error('[AUTO_OP] tryFindTarget 异常:', e); }
+        if (root !== document) {
+            try {
+                if (targetObj.strict) {
+                    const queryResult = document.querySelectorAll(targetObj.strict);
+                    const found = verifyList(queryResult);
+                    if (found) { return found; }
+                }
+                if (targetObj.loose) {
+                    const queryResult = document.querySelectorAll(targetObj.loose);
+                    const found = verifyList(queryResult);
+                    if (found) { return found; }
+                }
+            } catch (e) {}
+        }
         return null;
     }
 
@@ -806,7 +827,8 @@
 
         let html = '';
         targets.forEach((t, i) => {
-            html += `<div class="ac-target-item active" data-index="${i}">
+            const isValid = t._isValid !== undefined ? t._isValid : (t.element && document.contains(t.element));
+            html += `<div class="ac-target-item ${isValid ? 'active' : 'missing'}" data-index="${i}">
                 <span>${isMultiMode ? (i + 1) + '. ' : ''}${t.desc}</span>
                 ${t.parentChain ? t.parentChain.map(p => '<span class="ac-target-parent">↓ ' + p.desc + '</span>').join('') : ''}
                 <select class="ac-match-mode" data-index="${i}">
@@ -1018,7 +1040,7 @@
             ancestor = ancestor.parentElement;
         }
 
-        const targetObj = { element: el, strict: sels.strict, loose: sels.loose, fingerprint: fp, desc, isInput, matchMode: isInput ? 'loose' : 'strict', parentSelector, parentChain, isAuto: false, missCount: 0 };
+        const targetObj = { element: el, strict: sels.strict, loose: sels.loose, fingerprint: fp, desc, isInput, matchMode: isInput ? 'loose' : 'strict', parentSelector, parentChain, isAuto: false, missCount: 0, _isValid: true };
         if (isMultiMode) {
             targets.push(targetObj);
             el.classList.add('ac-selected-highlight');
@@ -1230,7 +1252,7 @@
                     const t = targets[idx];
                     const el = t.element;
 
-                    if (t.isInput && autoFillContent) {
+                    if (t.isInput) {
                         if (isInputField(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
                             el.value = autoFillContent;
                             el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1277,7 +1299,7 @@
                     anyClicked = true;
                     const el = t.element;
 
-                    if (t.isInput && autoFillContent) {
+                    if (t.isInput) {
                         if (isInputField(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
                             el.value = autoFillContent;
                             el.dispatchEvent(new Event('input', { bubbles: true }));
