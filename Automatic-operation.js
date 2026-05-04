@@ -136,6 +136,7 @@
             border-radius: 12px; padding: 0; width: 300px; font-size: 13px !important;
             box-shadow: 0 8px 32px rgba(0,0,0,0.5); transition: opacity 0.3s; overflow: hidden;
             display: flex; flex-direction: column; font-variant-numeric: tabular-nums !important;
+            text-align: left !important;
         }
         .ac-header {
             position: sticky; top: 0; background: var(--panel-bg); border-bottom: 1px solid var(--panel-border);
@@ -183,8 +184,8 @@
             margin-bottom: 5px; letter-spacing: 0.5px;
         }
         .ac-row input[type="number"], .ac-row select, .ac-row input[type="text"] {
-            width: 100%; background: var(--panel-input-bg); border: 1px solid var(--panel-input-border);
-            border-radius: 6px; color: var(--panel-input-text); padding: 7px 10px; font-size: 13px;
+            width: 100%; background: var(--panel-input-bg) !important; border: 1px solid var(--panel-input-border) !important;
+            border-radius: 6px; color: var(--panel-input-text) !important; padding: 7px 10px; font-size: 13px;
             font-family: var(--ac-font); outline: none; box-sizing: border-box; -webkit-appearance: none;
         }
         .ac-row input[type="number"]:focus, .ac-row select:focus, .ac-row input[type="text"]:focus {
